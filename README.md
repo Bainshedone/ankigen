@@ -20,10 +20,9 @@ AnkiGen is a Gradio-based web application that generates Anki-compatible CSV fil
 - Exports to CSV format compatible with Anki import
 - Utilizes LLMs for high-quality content generation
 
-## TODO
+## FORK features
+- instead of Openai, Openrouter is added as an free alternative :)
 
-- [ ] model dropdown - uses gpt4o-mini by default
-- [ ] cloze (checkbox?)
 
 ## Screenshot
 
@@ -35,7 +34,7 @@ AnkiGen is a Gradio-based web application that generates Anki-compatible CSV fil
 1. Clone this repository:
 
 ```
-git clone https://github.com/brickfrog/ankigen.git
+git clone https://github.com/Banishedone/ankigen.git
 cd ankigen
 ```
 
@@ -46,7 +45,7 @@ cd ankigen
 pip install -r requirements.txt
 ```
 
-3. Set up your OpenAI API key (required for LLM functionality).
+3. Set up your Openrouter API key (required for LLM functionality).
 
 ## Usage
 

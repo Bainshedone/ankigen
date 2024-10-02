@@ -2,6 +2,8 @@ from openai import OpenAI
 from pydantic import BaseModel
 from typing import List, Optional
 import gradio as gr
+import json
+
 
 
 class Step(BaseModel):
@@ -39,119 +41,111 @@ class CardList(BaseModel):
 
 
 def structured_output_completion(
-    client, model, response_format, system_prompt, user_prompt
+    client, model, system_prompt, user_prompt
 ):
     try:
-        completion = client.beta.chat.completions.parse(
+        completion = client.chat.completions.create(
             model=model,
             messages=[
                 {"role": "system", "content": system_prompt.strip()},
                 {"role": "user", "content": user_prompt.strip()},
             ],
-            response_format=response_format,
         )
+        
+        print("Raw API response:", completion)
+        
+        response_content = completion.choices[0].message.content
+        
+        try:
+            parsed_response = json.loads(response_content)
+            return parsed_response
+        except json.JSONDecodeError:
+            print("Invalid JSON response:", response_content)
+            return None
 
     except Exception as e:
         print(f"An error occurred during the API call: {e}")
         return None
 
-    try:
-        if not hasattr(completion, "choices") or not completion.choices:
-            print("No choices returned in the completion.")
-            return None
-
-        first_choice = completion.choices[0]
-        if not hasattr(first_choice, "message"):
-            print("No message found in the first choice.")
-            return None
-
-        if not hasattr(first_choice.message, "parsed"):
-            print("Parsed message not available in the first choice.")
-            return None
-
-        return first_choice.message.parsed
-
-    except Exception as e:
-        print(f"An error occurred while processing the completion: {e}")
-        raise gr.Error(f"Processing error: {e}")
-
-
 def generate_cards(
     api_key_input,
+    model_name,
     subject,
     topic_number=1,
     cards_per_topic=2,
     preference_prompt="assume I'm a beginner",
 ):
-    """
-    Generates flashcards for a given subject.
-
-    Parameters:
-    - subject (str): The subject to generate cards for.
-    - topic_number (int): Number of topics to generate.
-    - cards_per_topic (int): Number of cards per topic.
-    - preference_prompt (str): User preferences to consider.
-
-    Returns:
-    - List[List[str]]: A list of rows containing
-    [topic, question, answer, explanation, example].
-    """
-
     gr.Info("Starting process")
 
     if not api_key_input:
-        return gr.Error("Error: OpenAI API key is required.")
+        return gr.Error("Error: OpenRouter API key is required.")
 
-    client = OpenAI(api_key=api_key_input)
-    model = "gpt-4o-mini"
+    client = OpenAI(
+        base_url="https://openrouter.ai/api/v1",
+        api_key=api_key_input,
+    )
+    model = model_name
+
 
     all_card_lists = []
 
     system_prompt = f"""
     You are an expert in {subject}, assisting the user to master the topic while 
     keeping in mind the user's preferences: {preference_prompt}.
+    Please provide your responses in valid JSON format.
     """
 
     topic_prompt = f"""
     Generate the top {topic_number} important subjects to know on {subject} in 
-    order of ascending difficulty.
+    order of ascending difficulty. Return the result as a JSON array of objects, 
+    each containing 'subject' and 'difficulty' keys.
     """
-
     try:
         topics_response = structured_output_completion(
-            client, model, Topics, system_prompt, topic_prompt
+            client, model, system_prompt, topic_prompt
         )
         if topics_response is None:
-            print("Failed to generate topics.")
-            return []
-        if not hasattr(topics_response, "result") or not topics_response.result:
-            print("Invalid topics response format.")
-            return []
-        topic_list = [
-            item for subtopic in topics_response.result for item in subtopic.result
-        ][:topic_number]
+            raise gr.Error("Failed to generate topics. Please try again.")
+        
+        topic_list = [item["subject"] for item in topics_response[:topic_number]]
+
     except Exception as e:
-        raise gr.Error(f"Topic generation failed due to {e}")
+        raise gr.Error(f"An error occurred: {str(e)}. Please try again or check your API key.")
 
     for topic in topic_list:
         card_prompt = f"""
-        You are to generate {cards_per_topic} cards on {subject}: "{topic}" 
+        Generate {cards_per_topic} cards on {subject}: "{topic}" 
         keeping in mind the user's preferences: {preference_prompt}.
-        
+
         Questions should cover both sample problems and concepts.
 
         Use the explanation field to help the user understand the reason behind things 
         and maximize learning. Additionally, offer tips (performance, gotchas, etc.).
+
+        Return the result as a JSON object with the following structure:
+        {{
+            "topic": "string",
+            "cards": [
+                {{
+                    "front": {{ "question": "string" }},
+                    "back": {{
+                        "answer": "string",
+                        "explanation": "string",
+                        "example": "string"
+                    }}
+                }}
+            ]
+        }}
         """
 
         try:
             cards = structured_output_completion(
-                client, model, CardList, system_prompt, card_prompt
+                client, model, system_prompt, card_prompt
             )
             if cards is None:
                 print(f"Failed to generate cards for topic '{topic}'.")
                 continue
-            if not hasattr(cards, "topic") or not hasattr(cards, "cards"):
+            if not isinstance(cards, dict) or 'topic' not in cards or 'cards' not in cards:
                 print(f"Invalid card response format for topic '{topic}'.")
                 continue
             all_card_lists.append(cards)
@@ -163,19 +157,19 @@ def generate_cards(
 
     for card_list_index, card_list in enumerate(all_card_lists, start=1):
         try:
-            topic = card_list.topic
+            topic = card_list['topic']
             # Get the total number of cards in this list to determine padding
-            total_cards = len(card_list.cards)
+            total_cards = len(card_list['cards'])
             # Calculate the number of digits needed for padding
             padding = len(str(total_cards))
 
-            for card_index, card in enumerate(card_list.cards, start=1):
+            for card_index, card in enumerate(card_list['cards'], start=1):
                 # Format the index with zero-padding
                 index = f"{card_list_index}.{card_index:0{padding}}"
-                question = card.front.question
-                answer = card.back.answer
-                explanation = card.back.explanation
-                example = card.back.example
+                question = card['front']['question']
+                answer = card['back']['answer']
+                explanation = card['back']['explanation']
+                example = card['back']['example']
                 row = [index, topic, question, answer, explanation, example]
                 flattened_data.append(row)
         except Exception as e:
@@ -201,16 +195,21 @@ with gr.Blocks(
     gr.themes.Soft(), title="AnkiGen", css="footer{display:none !important}"
 ) as ankigen:
     gr.Markdown("# 📚 AnkiGen - Anki Card Generator")
-    gr.Markdown("#### Generate an LLM generated Anki comptible csv based on your subject and preferences.") #noqa
+    gr.Markdown("#### Generate an LLM generated Anki comptible csv based on your subject and preferences.")
 
     with gr.Row():
         with gr.Column(scale=1):
             gr.Markdown("### Configuration")
 
             api_key_input = gr.Textbox(
-                label="OpenAI API Key",
+                label="OpenRouter API Key",
                 type="password",
-                placeholder="Enter your OpenAI API key",
+                placeholder="Enter your OpenRouter API key",
+            )
+            model_input = gr.Textbox(
+                label="Model Name",
+                placeholder="Enter the model name (e.g., nousresearch/hermes-3-llama-3.1-405b:free)",
+                value="nousresearch/hermes-3-llama-3.1-405b:free"
             )
             subject = gr.Textbox(
                 label="Subject",
@@ -224,8 +223,7 @@ with gr.Blocks(
             )
             preference_prompt = gr.Textbox(
                 label="Preference Prompt",
-                placeholder=
-                """Any preferences? For example: Learning level, e.g., "Assume I'm a beginner" or "Target an advanced audience" Content scope, e.g., "Only cover up until subqueries in SQL" or "Focus on organic chemistry basics""", #noqa
+                placeholder="Any preferences? For example: Learning level, e.g., \"Assume I'm a beginner\" or \"Target an advanced audience\" Content scope, e.g., \"Only cover up until subqueries in SQL\" or \"Focus on organic chemistry basics\"",
             )
             generate_button = gr.Button("Generate Cards")
         with gr.Column(scale=2):
@@ -256,6 +254,7 @@ with gr.Blocks(
         fn=generate_cards,
         inputs=[
             api_key_input,
+            model_input,
             subject,
             topic_number,
             cards_per_topic,
