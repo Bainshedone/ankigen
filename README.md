@@ -21,6 +21,7 @@ AnkiGen is a Gradio-based web application that generates Anki-compatible CSV fil
 - Utilizes LLMs for high-quality content generation
 
 ## FORK features
+
 - instead of Openai, Openrouter is added as an free alternative :)
 
 
