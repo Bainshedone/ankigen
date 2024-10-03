@@ -3,6 +3,7 @@ from pydantic import BaseModel
 from typing import List, Optional
 import gradio as gr
 import json
+import re
 
 
 
@@ -39,7 +40,42 @@ class CardList(BaseModel):
     topic: str
     cards: List[Card]
 
+def universal_response_handler(response_content):
+    # Extract JSON content from the response
+    json_match = re.search(r'\{.*\}|\[.*\]', response_content, re.DOTALL)
+    if json_match:
+        json_content = json_match.group()
+    else:
+        print("No JSON content found in the response")
+        return None
 
+    try:
+        # Parse the JSON content
+        parsed_response = json.loads(json_content)
+        
+        # If the parsed response is a list, return it directly
+        if isinstance(parsed_response, list):
+            return parsed_response
+        # If it's a dict, check if it has a 'result' key
+        elif isinstance(parsed_response, dict):
+            if 'result' in parsed_response:
+                return parsed_response['result']
+            elif 'topic' in parsed_response and 'cards' in parsed_response:
+                # Handle the case where we get a single topic with cards
+                return [parsed_response]
+            else:
+                return [parsed_response]
+        else:
+            print("Unexpected response format:", parsed_response)
+            return None
+
+    except json.JSONDecodeError:
+        print("Invalid JSON response:", json_content)
+        return None
+    except Exception as ex:
+        print(f"An error occurred while parsing the response: {ex}")
+        return None
+    
 def structured_output_completion(
     client, model, system_prompt, user_prompt
 ):
@@ -55,13 +91,7 @@ def structured_output_completion(
         print("Raw API response:", completion)
         
         response_content = completion.choices[0].message.content
-        
-        try:
-            parsed_response = json.loads(response_content)
-            return parsed_response
-        except json.JSONDecodeError:
-            print("Invalid JSON response:", response_content)
-            return None
+        return universal_response_handler(response_content)
 
     except Exception as e:
         print(f"An error occurred during the API call: {e}")
@@ -97,31 +127,45 @@ def generate_cards(
 
     topic_prompt = f"""
     Generate the top {topic_number} important subjects to know on {subject} in 
-    order of ascending difficulty. Return the result as a JSON array of objects, 
-    each containing 'subject' and 'difficulty' keys.
+    order of ascending difficulty. Return ONLY a JSON array of objects, 
+    each containing 'subject' and 'difficulty' keys. Do not include any additional text or explanations. For example:
+    [
+    {{"subject": "Basic Concept 1", "difficulty": 1}},
+    {{"subject": "Advanced Concept 2", "difficulty": 2}}
+    ]
     """
     try:
         topics_response = structured_output_completion(
-            client, model, system_prompt, topic_prompt
+            client, model_name, system_prompt, topic_prompt
         )
         if topics_response is None:
             raise gr.Error("Failed to generate topics. Please try again.")
         
-        topic_list = [item["subject"] for item in topics_response[:topic_number]]
+        if isinstance(topics_response, list):
+            topic_list = []
+            for item in topics_response[:topic_number]:
+                if isinstance(item, dict):
+                    topic = item.get('subject') or item.get('topic')
+                    if topic:
+                        topic_list.append(topic)
+                elif isinstance(item, str):
+                    topic_list.append(item)
+            
+            if not topic_list:
+                raise gr.Error("Unexpected response format. Please try again.")
+        else:
+            raise gr.Error("Unexpected response format. Please try again.")
 
     except Exception as e:
         raise gr.Error(f"An error occurred: {str(e)}. Please try again or check your API key.")
 
     for topic in topic_list:
         card_prompt = f"""
-        Generate {cards_per_topic} cards on {subject}: "{topic}" 
+        Generate {cards_per_topic} cards on {subject}: "{topic}"
         keeping in mind the user's preferences: {preference_prompt}.
-
         Questions should cover both sample problems and concepts.
-
-        Use the explanation field to help the user understand the reason behind things 
+        Use the explanation field to help the user understand the reason behind things
         and maximize learning. Additionally, offer tips (performance, gotchas, etc.).
-
         Return the result as a JSON object with the following structure:
         {{
             "topic": "string",
@@ -140,15 +184,17 @@ def generate_cards(
 
         try:
             cards = structured_output_completion(
-                client, model, system_prompt, card_prompt
+                client, model_name, system_prompt, card_prompt
             )
             if cards is None:
                 print(f"Failed to generate cards for topic '{topic}'.")
                 continue
-            if not isinstance(cards, dict) or 'topic' not in cards or 'cards' not in cards:
+            if isinstance(cards, dict) and 'topic' in cards and 'cards' in cards:
+                all_card_lists.append(cards)
+            elif isinstance(cards, list) and len(cards) > 0 and isinstance(cards[0], dict) and 'topic' in cards[0] and 'cards' in cards[0]:
+                all_card_lists.extend(cards)
+            else:
                 print(f"Invalid card response format for topic '{topic}'.")
-                continue
-            all_card_lists.append(cards)
         except Exception as e:
             print(f"An error occurred while generating cards for topic '{topic}': {e}")
             continue
